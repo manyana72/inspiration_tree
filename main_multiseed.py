@@ -14,6 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import sys
+torch_dir = '/home/m_goyal1.iitr/anaconda3/lib/python3.11/site-packages'
+sys.path.append(torch_dir)
+diff_dir='/home/m_goyal1.iitr/anaconda3/pkgs'
+sys.path.append(diff_dir)
+
 import argparse
 import multiprocessing as mp
 import os
@@ -24,10 +30,11 @@ from shutil import copyfile
 import utils
 import glob
 
+os.environ['CURL_CA_BUNDLE'] = ''
+
 MODEL_ID = "runwayml/stable-diffusion-v1-5"
 MODEL_ID_CLIP = "openai/clip-vit-base-patch32"
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
+device = "cuda"
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--parent_data_dir", type=str, help="Path to directory with the training samples")
@@ -36,6 +43,9 @@ def parse_args():
     parser.add_argument("--max_train_steps", type=int, default=201, help="your GPU id")
     parser.add_argument("--GPU_ID", type=int, default=0, help="your GPU id")
     parser.add_argument("--multiprocess", type=int, default=0)
+    parser.add_argument("--reweight_token", type=str, default="<*>")
+    parser.add_argument("--reweight_factor", type=float, default=1.0)
+    parser.add_argument("--output_dir", type=str, default="outputs")
     
     args = parser.parse_args()
     return args
@@ -50,7 +60,9 @@ def run_seed(args, seed):
                         "--output_dir", f"outputs/{args.parent_data_dir}/{args.node}/{args.test_name}_seed{seed}/",
                         "--seed", f"{seed}",
                         "--max_train_steps", f"{args.max_train_steps}",
-                        "--validation_steps", "100"
+                        "--validation_steps", "100",
+                        "--reweight_token", f"{args.reweight_token}",
+                        "--reweight_factor", f"{args.reweight_factor}"
                         ])
     if exit_code.returncode:
         sys.exit(1)
@@ -107,6 +119,8 @@ if __name__ == "__main__":
                         "--validation_steps", "100",
                         "--resume_from_checkpoint", f"outputs/{args.parent_data_dir}/{args.node}/{args.node}_seed{best_seed}/checkpoint-200",
                         "--checkpointing_steps", "2000"
+                        " --reweight_token", f"{args.reweight_token}",
+                        " --reweight_factor", f"{args.reweight_factor}"
                         ])
 
     copyfile(f"outputs/{args.parent_data_dir}/{args.node}/{args.node}_seed{best_seed}/learned_embeds.bin",

@@ -14,6 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+
+from typing import Optional, Union, Tuple, List, Callable, Dict
+import torch.nn.functional as nnf
+import abc
 import matplotlib.pyplot as plt
 from PIL import Image
 import torch
@@ -68,9 +72,11 @@ if __name__ == "__main__":
     args = parse_args()
     if not os.path.exists(f"{args.path_to_new_tokens}/{args.node}/consistency_test"):
         os.mkdir(f"{args.path_to_new_tokens}/{args.node}/consistency_test")
-    seeds = [0, 1000, 1234, 111]
+    seeds = [0]
     prompts_title = ["Vl", "Vr", "Vl Vr"]
     prompt_to_vec, prompts_per_seed = get_tree_tokens(args, seeds)
+    for (seed, prompts) in prompts_per_seed.items():
+        print(f"Seed {seed} has {prompts} prompts")
     # prompts_per_seed is {seed: ["<*_seed>", "<&_seed>", "<*_seed> <&_seed>"]}
     print(prompts_per_seed)
     

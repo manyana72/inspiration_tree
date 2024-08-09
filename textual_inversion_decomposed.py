@@ -15,7 +15,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
-
+from typing import Optional, Union, Tuple, List, Callable, Dict
+import torch.nn.functional as nnf
 import argparse
 import logging
 import math
@@ -138,7 +139,7 @@ def save_progress(text_encoder, placeholder_token_ids, accelerator, args, save_p
     learned_embeds_dict = {}
     for i in range(len(args.placeholder_token.split(" "))):
         learned_embeds = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[placeholder_token_ids[i]]
-        learned_embeds_dict[args.placeholder_token.split(" ")[i]] = learned_embeds.detach().cpu()
+        learned_embeds_dict[args.placeholder_token.split(" ")[i]] = learned_embeds.detach()
     torch.save(learned_embeds_dict, save_path)
 
 
@@ -368,7 +369,24 @@ def parse_args():
 
     # clip refinement related
     parser.add_argument("--path_to_clip_selected", type=str, default=None)
-    
+
+    # Args for attention reweighing
+    parser.add_argument(
+        "--reweight_token",
+        type=str,
+        default="<*>",
+        help=(
+            "Token to be reweighed. 0 for the left node, 1 for the right node"
+        ),
+    )
+    parser.add_argument(
+        "--reweight_factor",
+        type=float,
+        default=1,
+        help=(
+            "Factor by which node is to be reweighed. Default=1, for no reweighing"
+        ),
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -546,6 +564,7 @@ class TextualInversionDataset(Dataset):
 
 
 def main():
+    os.environ["HF_HOME"] = os.path.expanduser("~/.cache/huggingface")
     args = parse_args()
 
     accelerator = Accelerator(
@@ -775,6 +794,38 @@ def main():
             return (1 / noise_scheduler.config.num_train_timesteps) * (1 - args.t_dist * np.cos(np.pi * x / noise_scheduler.config.num_train_timesteps))
         prob_t_weights = [func(t_) for t_ in np.arange(noise_scheduler.config.num_train_timesteps)]
     
+    def get_word_inds(text: str, word_place: int, tokenizer: CLIPTokenizer):
+        split_text = text.split(" ")
+        if type(word_place) is str:
+            word_place = [i for i, word in enumerate(split_text) if word_place == word]
+        elif type(word_place) is int:
+            word_place = [word_place]
+        out = []
+        if len(word_place) > 0:
+            words_encode = [tokenizer.decode([item]).strip("#") for item in tokenizer.encode(text)][1:-1]
+            cur_len, ptr = 0, 0
+
+            for i in range(len(words_encode)):
+                cur_len += len(words_encode[i])
+                if ptr in word_place:
+                    out.append(i + 1)
+                if cur_len >= len(split_text[ptr]):
+                    ptr += 1
+                    cur_len = 0
+        return np.array(out)
+
+    def get_equalizer(text: str, word_select: Union[int, Tuple[int, ...]], values: Union[List[float], Tuple[float, ...]], tokenizer: CLIPTokenizer, max_length: int, device: torch.device):
+        if isinstance(word_select, int) or isinstance(word_select, str):
+            word_select = (word_select,)
+        equalizer = torch.ones((1, max_length),device=device)  # Assuming 77 is the length of the tokenized input
+        values = torch.tensor(values, dtype=torch.float32)
+        for word in word_select:
+            inds = get_word_inds(text, word, tokenizer)
+            for ind in inds:
+                if ind < max_length:
+                    equalizer[:, ind] = values
+        return equalizer
+    
     for epoch in range(first_epoch, args.num_train_epochs):
         text_encoder.train()
         for step, batch in enumerate(train_dataloader):
@@ -810,6 +861,20 @@ def main():
 
                 # Get the text embedding for conditioning
                 encoder_hidden_states = text_encoder(batch[ids_prompt_key])[0].to(dtype=weight_dtype)
+                print("Size of encoder_hidden_states",encoder_hidden_states.size())
+                print("Size of batch[ids_prompts_key]",batch[ids_prompt_key].size())
+                print("Encoder[0]", encoder_hidden_states[0])
+                print("Batch[Ids_prompt_key][0]",(batch[ids_prompt_key])[0])
+
+                #Add the attention reweighing for a specific token
+                if args.reweight_token:  # Assuming args.reweight_token contains the token to reweight
+                    max_length = encoder_hidden_states.shape[1]
+                    for b in range(bsz):
+                        text = tokenizer.decode(batch[ids_prompt_key][b])
+                        equalizer = get_equalizer(text, args.reweight_token, [args.reweight_factor], tokenizer, max_length, accelerator.device)
+                        encoder_hidden_states[b] *= equalizer[0,:max_length].unsqueeze(1)
+
+
                 # Predict the noise residual
                 model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
 

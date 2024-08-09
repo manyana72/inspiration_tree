@@ -1,3 +1,7 @@
 outputs/
 wandb/
+input_concepts/
+inspi/
+datasets/
+__pycache__/
 .history/
